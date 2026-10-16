@@ -21,3 +21,28 @@ const { artifact, assets } = await prepareDeployArtifact('/path/to/app');
 Preparation packages existing build output; it does not build, contact a platform, provision resources, or deploy. It supports Void Cloudflare Worker builds, SPAs, and static sites. Node targets, Pages `output: 'static'`, remote data, deploy-time prerendering, Sandbox, and Live resources require the normal `void deploy` workflow instead.
 
 Run preparation inside the same isolated environment as the app build. App configuration and build plugins execute project code; keep platform credentials on the publishing server.
+
+## Cloudflare Build Output
+
+Use `prepareCfBuildOutput` to convert an existing Cloudflare Worker build into a disposable Cloudflare Build Output directory:
+
+```ts
+import { prepareCfBuildOutput } from 'void/deploy';
+
+const prepared = await prepareCfBuildOutput('/path/to/app/dist/server', undefined, 'staging');
+if (!prepared) {
+  throw new Error('The Worker build could not be prepared.');
+}
+
+try {
+  // Inspect or pass prepared.directory to your Cloudflare publication workflow.
+} finally {
+  await prepared.dispose();
+}
+```
+
+The input directory must contain the built Worker modules and its generated `wrangler.json`. Preparation copies the Worker modules and configured assets without changing that input. It does not provision resources, upload the Worker, or activate a deployment. Local Dockerfile container images require their normal Docker build environment.
+
+The optional second argument pins the target account. A conflicting account in the built configuration returns `null`. When omitted, preparation preserves an account from the build or leaves it unset; credentials are not required. The third argument records the Vite build mode in the output metadata and defaults to `production`.
+
+The result contains `directory`, an optional `assetsDirectory` pointing to the input assets, and an asynchronous `dispose()` method. Always dispose the result after use. Unsupported build configuration returns `null`; invalid or missing Worker modules throw an error.

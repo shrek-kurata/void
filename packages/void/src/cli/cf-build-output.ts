@@ -104,17 +104,22 @@ function copyBundle(source: string, destination: string): Record<string, { type:
   return modules;
 }
 
-/** Create a private cf Build Output tree from Void's verified Vite artifact. */
+/** Create a disposable cf Build Output tree from an existing Cloudflare Worker build. */
 export async function prepareCfBuildOutput(
   workerDirectory: string,
-  accountId: string,
+  accountId?: string,
+  mode = 'production',
 ): Promise<CfBuildOutput | null> {
   const source = resolve(workerDirectory);
   const raw = record(JSON.parse(readFileSync(join(source, 'wrangler.json'), 'utf8')));
   if (!raw) {
     return null;
   }
-  if (typeof raw.account_id === 'string' && raw.account_id !== accountId) {
+  if (
+    typeof raw.account_id === 'string' &&
+    accountId !== undefined &&
+    raw.account_id !== accountId
+  ) {
     return null;
   }
   const config = migrateBuiltWranglerConfig(raw);
@@ -149,7 +154,12 @@ export async function prepareCfBuildOutput(
     const bundle = getWorkerBundleDir(directory);
     mkdirSync(bundle, { recursive: true });
     const modules = copyBundle(source, bundle);
-    await writeRootConfig(directory, { accountId }, { isPreview: false, mode: 'production' });
+    const configuredAccountId = accountId ?? raw.account_id;
+    await writeRootConfig(
+      directory,
+      typeof configuredAccountId === 'string' ? { accountId: configuredAccountId } : {},
+      { isPreview: false, mode },
+    );
     await writeWorkerConfig({
       root: directory,
       config: config.worker,

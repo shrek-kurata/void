@@ -21,10 +21,10 @@ import { createBuilder } from 'vite';
 import { afterEach, expect, it, vi } from 'vite-plus/test';
 import {
   type CfBuildOutput,
-  prepareCfBuildOutput,
   prepareCfFrameworkBuildOutput,
   prepareCfStaticBuildOutput,
 } from '../../src/cli/cf-build-output.ts';
+import { prepareCfBuildOutput } from '../../src/deploy.ts';
 
 const roots: Array<string> = [];
 // These tests start a real cf CLI process (and one also runs a Vite build).
@@ -76,6 +76,52 @@ function expectCfDryRun(directory: string, command = ['workers', 'versions', 'cr
   expect(dryRun.status, `${dryRun.stdout}\n${dryRun.stderr}`).toBe(0);
   return dryRun;
 }
+
+it.each([undefined, 'account-id'])(
+  'prepares public build output without credentials for built account %s',
+  async (accountId) => {
+    const config = {
+      name: 'void-test',
+      compatibility_date: '2026-09-29',
+      main: 'index.js',
+      ...(accountId ? { account_id: accountId } : {}),
+    };
+    const output = worker(config);
+    const authored = readFileSync(join(output, 'wrangler.json'), 'utf8');
+    const disposed = await withPrepared(prepareCfBuildOutput(output), async (prepared) => {
+      const built = await readBuildOutput(prepared.directory);
+      expect(built.rootConfig.accountId).toBe(accountId);
+      expect(built.rootConfig.buildContext).toEqual({ isPreview: false, mode: 'production' });
+      expect(built.workers.default.config.manifest?.mainModule).toBe('index.js');
+      expect(readFileSync(join(output, 'wrangler.json'), 'utf8')).toBe(authored);
+    });
+    expect(existsSync(disposed.directory)).toBe(false);
+  },
+);
+
+it('records an explicit build mode and matching target account', async () => {
+  const output = worker({
+    name: 'void-test',
+    compatibility_date: '2026-09-29',
+    main: 'index.js',
+    account_id: 'account-id',
+  });
+  await withPrepared(prepareCfBuildOutput(output, 'account-id', 'staging'), async (prepared) => {
+    const built = await readBuildOutput(prepared.directory);
+    expect(built.rootConfig.accountId).toBe('account-id');
+    expect(built.rootConfig.buildContext).toEqual({ isPreview: false, mode: 'staging' });
+  });
+});
+
+it('rejects a mismatching explicit target account', async () => {
+  const output = worker({
+    name: 'void-test',
+    compatibility_date: '2026-09-29',
+    main: 'index.js',
+    account_id: 'built-account',
+  });
+  await expect(prepareCfBuildOutput(output, 'different-account')).resolves.toBeNull();
+});
 
 it(
   'preserves additional module types from a real Cloudflare Vite build',

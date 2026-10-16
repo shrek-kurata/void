@@ -22,6 +22,8 @@ import { collectRevalidate } from './isr-config.ts';
 import { hasEmailHandlers } from './router/email.ts';
 import { validateSsrEntry } from './ssr/entry.ts';
 
+export { prepareCfBuildOutput, type CfBuildOutput } from './cli/cf-build-output.ts';
+
 export type PreparedDeployArtifact = {
   artifact: DeployArtifact;
   /** Static asset bytes keyed by URL path, encoded as base64. */
