@@ -13,7 +13,16 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getWorkerAssetsDir, readBuildOutput } from '@cloudflare/build-output-utils';
+import {
+  getWorkerAssetsDir,
+  getWorkerBundleDir,
+  getWorkerConfigPath,
+  getRootConfigPath,
+  readBuildOutput,
+  writeRootConfig,
+  writeWorkerConfig,
+  writeContainerConfig,
+} from '@cloudflare/build-output-utils';
 import { cloudflare } from '@cloudflare/vite-plugin';
 import { renderCloudflareStaticEntry } from '@void/deploy-cloudflare';
 import { toSlash } from 'pathslash';
@@ -76,6 +85,184 @@ function expectCfDryRun(directory: string, command = ['workers', 'versions', 'cr
   expect(dryRun.status, `${dryRun.stdout}\n${dryRun.stderr}`).toBe(0);
   return dryRun;
 }
+
+async function nativeBuild() {
+  const root = mkdtempSync(join(tmpdir(), 'void-native-cf-output-'));
+  roots.push(root);
+  await writeRootConfig(
+    root,
+    { accountId: 'account-id', complianceRegion: 'public' },
+    { isPreview: false, mode: 'staging' },
+  );
+  const bundle = getWorkerBundleDir(root);
+  mkdirSync(join(bundle, 'assets'), { recursive: true });
+  writeFileSync(
+    join(bundle, 'index.js'),
+    'import data from "./assets/message.txt"; export default { fetch() { return new Response(data) } };',
+  );
+  writeFileSync(join(bundle, 'assets/message.txt'), 'native text');
+  writeFileSync(join(bundle, 'assets/font.woff2'), Buffer.from([0, 255, 4, 128]));
+  writeFileSync(join(bundle, 'assets/runtime.wasm'), Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
+  writeFileSync(join(bundle, 'index.js.map'), '{"version":3,"sourcesContent":["original source"]}');
+  await writeWorkerConfig({
+    root,
+    config: {
+      name: 'void-native-test',
+      compatibilityDate: '2026-10-12',
+      env: { DATA: { type: 'r2', name: 'native-bucket' }, TOKEN: { type: 'secret' } },
+    },
+    manifest: {
+      type: 'partial',
+      mainModule: 'index.js',
+      modules: {
+        'assets/message.txt': { type: 'text' },
+        'assets/font.woff2': { type: 'data' },
+        'assets/runtime.wasm': { type: 'wasm' },
+      },
+    },
+  });
+  mkdirSync(getWorkerAssetsDir(root), { recursive: true });
+  writeFileSync(join(getWorkerAssetsDir(root), 'index.html'), '<h1>native</h1>');
+  return root;
+}
+
+it(
+  'prepares native output with complete module types, original mode and unchanged source files',
+  async () => {
+    const root = await nativeBuild();
+    const paths = [
+      getRootConfigPath(root),
+      getWorkerConfigPath(root),
+      join(getWorkerBundleDir(root), 'assets/font.woff2'),
+      join(getWorkerBundleDir(root), 'index.js.map'),
+    ];
+    const before = paths.map((path) => readFileSync(path));
+    await withPrepared(prepareCfBuildOutput(root), async (prepared) => {
+      const result = await readBuildOutput(prepared.directory);
+      expect(result.rootConfig).toMatchObject({
+        accountId: 'account-id',
+        complianceRegion: 'public',
+        buildContext: { mode: 'staging', isPreview: false },
+      });
+      expect(result.workers.default.config.manifest).toMatchObject({
+        type: 'complete',
+        mainModule: 'index.js',
+        modules: {
+          'index.js': { type: 'esm' },
+          'index.js.map': { type: 'sourcemap' },
+          'assets/message.txt': { type: 'text' },
+          'assets/font.woff2': { type: 'data' },
+          'assets/runtime.wasm': { type: 'wasm' },
+        },
+      });
+      expect(result.workers.default.config.env).toMatchObject({
+        DATA: { type: 'r2', name: 'native-bucket' },
+        TOKEN: { type: 'secret' },
+      });
+      expect(
+        readFileSync(join(getWorkerBundleDir(prepared.directory), 'assets/font.woff2')),
+      ).toEqual(before[2]);
+      expect(
+        readFileSync(join(getWorkerBundleDir(prepared.directory), 'assets/runtime.wasm')),
+      ).toEqual(readFileSync(join(getWorkerBundleDir(root), 'assets/runtime.wasm')));
+      expect(readFileSync(join(getWorkerBundleDir(prepared.directory), 'index.js.map'))).toEqual(
+        before[3],
+      );
+      expect(
+        readFileSync(join(getWorkerAssetsDir(prepared.directory), 'index.html'), 'utf8'),
+      ).toContain('native');
+      expectCfDryRun(prepared.directory);
+    });
+    expect(paths.map((path) => readFileSync(path))).toEqual(before);
+  },
+  CF_BUILD_TIMEOUT_MS,
+);
+
+it('rejects native artifact account and mode mismatches', async () => {
+  const root = await nativeBuild();
+  await expect(prepareCfBuildOutput(root, 'another-account')).resolves.toBeNull();
+  await expect(prepareCfBuildOutput(root, undefined, 'production')).resolves.toBeNull();
+});
+
+it('preserves native auxiliary Workers and already-built Container declarations', async () => {
+  const root = await nativeBuild();
+  const bundle = getWorkerBundleDir(root, 'auxiliary');
+  mkdirSync(bundle, { recursive: true });
+  writeFileSync(
+    join(bundle, 'index.js'),
+    'export default { fetch() { return new Response("aux") } };',
+  );
+  await writeWorkerConfig({
+    root,
+    directoryName: 'auxiliary',
+    config: {
+      name: 'void-native-aux',
+      compatibilityDate: '2026-10-12',
+    },
+    manifest: { type: 'partial', mainModule: 'index.js', modules: {} },
+  });
+  await writeContainerConfig({
+    root,
+    directoryName: 'container',
+    config: {
+      name: 'native-container',
+      maxInstances: 2,
+      image: { reference: 'docker.io/example/native:1' },
+    },
+  });
+  await withPrepared(prepareCfBuildOutput(root, 'account-id', 'staging'), async (prepared) => {
+    const result = await readBuildOutput(prepared.directory);
+    expect(result.workers.auxiliary.config.name).toBe('void-native-aux');
+    expect(result.containers[0]?.config).toMatchObject({
+      name: 'native-container',
+      image: { reference: 'docker.io/example/native:1' },
+    });
+  });
+});
+
+it.each(['../outside.js', '/outside.js', 'C:/outside.js', 'assets\\outside.js'])(
+  'rejects a native manifest module outside its portable bundle: %s',
+  async (module) => {
+    const root = await nativeBuild();
+    const path = getWorkerConfigPath(root);
+    const config = JSON.parse(readFileSync(path, 'utf8'));
+    config.manifest = {
+      type: 'complete',
+      mainModule: 'index.js',
+      modules: {
+        'index.js': { type: 'esm' },
+        [module]: { type: 'esm' },
+      },
+    };
+    writeFileSync(path, JSON.stringify(config));
+    await expect(prepareCfBuildOutput(root)).rejects.toThrow('inside the build bundle');
+  },
+);
+
+it('rejects an absent native main module', async () => {
+  const root = await nativeBuild();
+  rmSync(join(getWorkerBundleDir(root), 'index.js'));
+  await expect(prepareCfBuildOutput(root)).rejects.toThrow('main module');
+});
+
+it.skipIf(process.platform === 'win32')('rejects symlinked native modules', async () => {
+  const root = await nativeBuild();
+  symlinkSync('index.js', join(getWorkerBundleDir(root), 'alias.js'));
+  await expect(prepareCfBuildOutput(root)).rejects.toThrow('Symlinks are not permitted');
+});
+
+it('preserves assets-only native output without adding a Worker bundle', async () => {
+  const root = await nativeBuild();
+  rmSync(getWorkerBundleDir(root), { recursive: true, force: true });
+  await withPrepared(prepareCfBuildOutput(root), async (prepared) => {
+    const output = await readBuildOutput(prepared.directory);
+    expect(output.workers.default.bundleDir).toBeUndefined();
+    expect(output.workers.default.config.manifest).toBeUndefined();
+    expect(
+      readFileSync(join(getWorkerAssetsDir(prepared.directory), 'index.html'), 'utf8'),
+    ).toContain('native');
+  });
+});
 
 it.each([undefined, 'account-id'])(
   'prepares public build output without credentials for built account %s',

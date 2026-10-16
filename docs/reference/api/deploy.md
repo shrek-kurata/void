@@ -41,8 +41,8 @@ try {
 }
 ```
 
-The input directory must contain the built Worker modules and its generated `wrangler.json`. Preparation copies the Worker modules and configured assets without changing that input. It does not provision resources, upload the Worker, or activate a deployment. Local Dockerfile container images require their normal Docker build environment.
+Pass the project root for native Cloudflare Build Output at `.cloudflare/output/v0`, or the Worker output directory containing a generated `wrangler.json`. Preparation copies modules and assets without changing that input. Native output retains its module types, auxiliary Workers, Container declarations, and build metadata. It does not provision resources, upload a Worker, or activate a deployment. Local Dockerfile container images in legacy output require their normal Docker build environment.
 
-The optional second argument pins the target account. A conflicting account in the built configuration returns `null`. When omitted, preparation preserves an account from the build or leaves it unset; credentials are not required. The third argument records the Vite build mode in the output metadata and defaults to `production`.
+The optional second argument pins the target account. A conflicting account in the built configuration returns `null`. When omitted, preparation preserves an account from the build or leaves it unset; credentials are not required. Native output keeps its original build mode; an explicitly different third argument returns `null`. For legacy output, the third argument records the Vite build mode and defaults to `production`.
 
 The result contains `directory`, an optional `assetsDirectory` pointing to the input assets, and an asynchronous `dispose()` method. Always dispose the result after use. Unsupported build configuration returns `null`; invalid or missing Worker modules throw an error.

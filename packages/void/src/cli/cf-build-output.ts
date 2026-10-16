@@ -13,6 +13,9 @@ import {
 import { tmpdir } from 'node:os';
 import {
   getWorkerBundleDir,
+  getWorkerAssetsDir,
+  getWorkerConfigPath,
+  getRootConfigPath,
   normalizeDirectoryName,
   readBuildOutput,
   writeAssets,
@@ -108,9 +111,12 @@ function copyBundle(source: string, destination: string): Record<string, { type:
 export async function prepareCfBuildOutput(
   workerDirectory: string,
   accountId?: string,
-  mode = 'production',
+  mode?: string,
 ): Promise<CfBuildOutput | null> {
   const source = resolve(workerDirectory);
+  if (existsSync(getRootConfigPath(source))) {
+    return prepareNativeBuildOutput(source, accountId, mode);
+  }
   const raw = record(JSON.parse(readFileSync(join(source, 'wrangler.json'), 'utf8')));
   if (!raw) {
     return null;
@@ -158,7 +164,7 @@ export async function prepareCfBuildOutput(
     await writeRootConfig(
       directory,
       typeof configuredAccountId === 'string' ? { accountId: configuredAccountId } : {},
-      { isPreview: false, mode },
+      { isPreview: false, mode: mode ?? 'production' },
     );
     await writeWorkerConfig({
       root: directory,
@@ -202,6 +208,86 @@ export async function prepareCfBuildOutput(
       directory,
       ...(typeof assetsDirectory === 'string'
         ? { assetsDirectory: resolve(source, assetsDirectory) }
+        : {}),
+      dispose,
+    };
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+}
+
+/** Copy and complete the native artifact without changing the Vite build's inputs or metadata. */
+async function prepareNativeBuildOutput(
+  source: string,
+  accountId?: string,
+  mode?: string,
+): Promise<CfBuildOutput | null> {
+  const built = await readBuildOutput(source);
+  if (
+    (accountId !== undefined &&
+      built.rootConfig.accountId !== undefined &&
+      accountId !== built.rootConfig.accountId) ||
+    (mode !== undefined && mode !== built.rootConfig.buildContext.mode)
+  ) {
+    return null;
+  }
+  const directory = mkdtempSync(join(tmpdir(), 'void-cf-native-'));
+  const dispose = async () => {
+    rmSync(directory, { recursive: true, force: true });
+  };
+  try {
+    await writeRootConfig(
+      directory,
+      {
+        accountId: accountId ?? built.rootConfig.accountId,
+        complianceRegion: built.rootConfig.complianceRegion,
+      },
+      { ...built.rootConfig.buildContext, mode: built.rootConfig.buildContext.mode },
+    );
+    for (const [name, worker] of Object.entries(built.workers)) {
+      if (
+        worker.bundleDir &&
+        (!worker.config.manifest ||
+          worker.config.manifest.modules[worker.config.manifest.mainModule]?.type !== 'esm')
+      ) {
+        throw new Error('The native Worker build must declare its main ES module.');
+      }
+      const configPath = getWorkerConfigPath(directory, name);
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify(worker.config));
+      if (worker.bundleDir && worker.config.manifest) {
+        const bundle = getWorkerBundleDir(directory, name);
+        for (const module of Object.keys(worker.config.manifest.modules)) {
+          const destination = join(bundle, module);
+          if (
+            module.includes('\\') ||
+            /^[a-z]:/i.test(module) ||
+            !isInside(bundle, resolve(bundle, module)) ||
+            !isInside(worker.bundleDir, resolve(worker.bundleDir, module))
+          ) {
+            throw new Error('Native Worker modules must stay inside the build bundle.');
+          }
+          mkdirSync(dirname(destination), { recursive: true });
+          copyFileSync(join(worker.bundleDir, module), destination);
+        }
+      }
+      if (worker.assetsDir) {
+        cpSync(worker.assetsDir, getWorkerAssetsDir(directory, name), { recursive: true });
+      }
+    }
+    for (const container of built.containers) {
+      await writeContainerConfig({
+        root: directory,
+        config: container.config,
+        directoryName: basename(dirname(container.configPath)),
+      });
+    }
+    await readBuildOutput(directory);
+    return {
+      directory,
+      ...(built.workers.default.assetsDir
+        ? { assetsDirectory: built.workers.default.assetsDir }
         : {}),
       dispose,
     };
