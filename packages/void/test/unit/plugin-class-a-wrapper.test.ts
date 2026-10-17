@@ -10,8 +10,9 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { toSlash } from 'pathslash';
 import { createServer, normalizePath, type Plugin, type ResolvedConfig } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import { getOriginalFrameworkEntry } from '../../src/plugin-framework-entry.ts';
@@ -123,6 +124,31 @@ describe('Class A framework custom entry', () => {
       '@tanstack/react-start/server-entry',
     );
   });
+
+  it.each(['@tanstack/react-start/server-entry', '@tanstack/react-start/server-entry.js'])(
+    'keeps the default TanStack server entry for a migrated main of %s',
+    (main) => {
+      expect(getOriginalFrameworkEntry('tanstack-start', createTanStackRoot(), main)).toBe(
+        '@tanstack/react-start/server-entry',
+      );
+    },
+  );
+
+  it('leaves a package entry for Vite to resolve', () => {
+    expect(
+      getOriginalFrameworkEntry('tanstack-start', createTanStackRoot(), '@acme/worker/entry'),
+    ).toBe('@acme/worker/entry');
+  });
+
+  it.each(['src/server.ts', './src/server', '../shared/server.tsx'])(
+    'reads the file entry %s from the app root',
+    (main) => {
+      const root = createTanStackRoot();
+      expect(getOriginalFrameworkEntry('tanstack-start', root, main)).toBe(
+        toSlash(resolve(root, main)),
+      );
+    },
+  );
 
   it.each(['', '  ', null, false, 1])('rejects an invalid custom entry %s', (main) => {
     expect(() => getOriginalFrameworkEntry('tanstack-start', createTanStackRoot(), main)).toThrow(

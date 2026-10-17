@@ -92,7 +92,9 @@ export { Counter } from './counter';
 export default handler;
 ```
 
-Void preserves these named exports in development and production builds. Without `cloudflare.main`, Void uses TanStack's default server entry.
+Void preserves these named exports in development, production builds, and deploys. Without `cloudflare.main`, Void uses TanStack's default server entry. A package entry such as `@tanstack/react-start/server-entry` is resolved as a module.
+
+Bind an exported Durable Object or Workflow class under `cloudflare` as well, for example in `cloudflare.durable_objects`. These settings apply when you deploy with `void deploy --platform cloudflare`. On a Void platform, use [Durable State](../../guide/durable-state.md) instead.
 
 ## Accessing Bindings Directly
 

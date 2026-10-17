@@ -580,6 +580,8 @@ function generateWrapperSource(
   const lines: Array<string> = [];
   lines.push(WRAPPER_MARKER);
   lines.push(`import original from "./${renamedEntry}";`);
+  // Durable Object, Workflow and entrypoint classes must stay exported from the uploaded module.
+  lines.push(`export * from "./${renamedEntry}";`);
 
   if (features.isr) {
     lines.push('import { handleFrameworkIsr } from "./__void_isr.mjs";');

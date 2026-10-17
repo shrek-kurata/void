@@ -65,6 +65,19 @@ function isInside(directory: string, path: string): boolean {
   return child !== '' && child !== '..' && !child.startsWith('../') && !isAbsolute(child);
 }
 
+/** Asset copies follow symlinks, so a link may not reach outside the asset directory. */
+function assertAssetSymlinksInside(directory: string): void {
+  const realDirectory = realpathSync(directory);
+  for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
+    if (
+      entry.isSymbolicLink() &&
+      !isInside(realDirectory, realpathSync(join(entry.parentPath, entry.name)))
+    ) {
+      throw new Error('The Worker assets contain a symlink outside the asset directory.');
+    }
+  }
+}
+
 function copyBundle(source: string, destination: string): Record<string, { type: ModuleType }> {
   const modules: Record<string, { type: ModuleType }> = {};
   for (const entry of readdirSync(source, { recursive: true, withFileTypes: true })) {
@@ -116,6 +129,11 @@ export async function prepareCfBuildOutput(
   const source = resolve(workerDirectory);
   if (existsSync(getRootConfigPath(source))) {
     return prepareNativeBuildOutput(source, accountId, mode);
+  }
+  if (!existsSync(join(source, 'wrangler.json'))) {
+    throw new Error(
+      `No Cloudflare Worker build found in ${source}. Pass the project root that contains .cloudflare/output/v0, or the Worker output directory that contains wrangler.json.`,
+    );
   }
   const raw = record(JSON.parse(readFileSync(join(source, 'wrangler.json'), 'utf8')));
   if (!raw) {
@@ -201,6 +219,7 @@ export async function prepareCfBuildOutput(
         await dispose();
         return null;
       }
+      assertAssetSymlinksInside(assetPath);
       await writeAssets({ root: directory, sourceDirectory: assetPath });
     }
     await readBuildOutput(directory);
@@ -267,6 +286,9 @@ async function prepareNativeBuildOutput(
             !isInside(worker.bundleDir, resolve(worker.bundleDir, module))
           ) {
             throw new Error('Native Worker modules must stay inside the build bundle.');
+          }
+          if (!existsSync(join(worker.bundleDir, module))) {
+            throw new Error(`Native Worker module ${module} is missing from the build bundle.`);
           }
           mkdirSync(dirname(destination), { recursive: true });
           copyFileSync(join(worker.bundleDir, module), destination);

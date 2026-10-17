@@ -180,8 +180,8 @@ it(
 
 it('rejects native artifact account and mode mismatches', async () => {
   const root = await nativeBuild();
-  await expect(prepareCfBuildOutput(root, 'another-account')).resolves.toBeNull();
-  await expect(prepareCfBuildOutput(root, undefined, 'production')).resolves.toBeNull();
+  await expect(prepareCfBuildOutput(root, { accountId: 'another-account' })).resolves.toBeNull();
+  await expect(prepareCfBuildOutput(root, { mode: 'production' })).resolves.toBeNull();
 });
 
 it('preserves native auxiliary Workers and already-built Container declarations', async () => {
@@ -210,14 +210,17 @@ it('preserves native auxiliary Workers and already-built Container declarations'
       image: { reference: 'docker.io/example/native:1' },
     },
   });
-  await withPrepared(prepareCfBuildOutput(root, 'account-id', 'staging'), async (prepared) => {
-    const result = await readBuildOutput(prepared.directory);
-    expect(result.workers.auxiliary.config.name).toBe('void-native-aux');
-    expect(result.containers[0]?.config).toMatchObject({
-      name: 'native-container',
-      image: { reference: 'docker.io/example/native:1' },
-    });
-  });
+  await withPrepared(
+    prepareCfBuildOutput(root, { accountId: 'account-id', mode: 'staging' }),
+    async (prepared) => {
+      const result = await readBuildOutput(prepared.directory);
+      expect(result.workers.auxiliary.config.name).toBe('void-native-aux');
+      expect(result.containers[0]?.config).toMatchObject({
+        name: 'native-container',
+        image: { reference: 'docker.io/example/native:1' },
+      });
+    },
+  );
 });
 
 it.each(['../outside.js', '/outside.js', 'C:/outside.js', 'assets\\outside.js'])(
@@ -244,6 +247,61 @@ it('rejects an absent native main module', async () => {
   rmSync(join(getWorkerBundleDir(root), 'index.js'));
   await expect(prepareCfBuildOutput(root)).rejects.toThrow('main module');
 });
+
+function completeNativeManifest(root: string, modules: Record<string, { type: string }>): void {
+  const path = getWorkerConfigPath(root);
+  const config = JSON.parse(readFileSync(path, 'utf8'));
+  config.manifest = { type: 'complete', mainModule: 'index.js', modules };
+  writeFileSync(path, JSON.stringify(config));
+}
+
+it('rejects a native main module that is not an ES module', async () => {
+  const root = await nativeBuild();
+  completeNativeManifest(root, { 'index.js': { type: 'text' } });
+  await expect(prepareCfBuildOutput(root)).rejects.toThrow('must declare its main ES module');
+});
+
+it('names a declared native module that is missing from the bundle', async () => {
+  const root = await nativeBuild();
+  completeNativeManifest(root, { 'index.js': { type: 'esm' }, 'chunk.js': { type: 'esm' } });
+  await expect(prepareCfBuildOutput(root)).rejects.toThrow(
+    'Native Worker module chunk.js is missing from the build bundle.',
+  );
+});
+
+it('names the expected inputs when a directory holds no Worker build', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'void-cf-build-output-empty-'));
+  roots.push(root);
+  await expect(prepareCfBuildOutput(root)).rejects.toThrow('No Cloudflare Worker build found');
+});
+
+it('returns only the public fields of the prepared output', async () => {
+  const output = worker({ name: 'void-test', compatibility_date: '2026-09-29', main: 'index.js' });
+  await withPrepared(prepareCfBuildOutput(output), async (prepared) => {
+    expect(Object.keys(prepared).sort()).toEqual(['directory', 'dispose']);
+  });
+});
+
+it.skipIf(process.platform === 'win32')(
+  'rejects a legacy asset symlink outside the asset directory',
+  async () => {
+    const output = worker({
+      name: 'void-test',
+      compatibility_date: '2026-09-29',
+      main: 'index.js',
+      assets: { directory: '../client' },
+    });
+    const client = join(dirname(output), 'client');
+    const secret = join(dirname(output), 'secret.txt');
+    mkdirSync(client, { recursive: true });
+    writeFileSync(join(client, 'index.html'), '<p>ok</p>');
+    writeFileSync(secret, 'private');
+    symlinkSync(secret, join(client, 'leak.txt'));
+    await expect(prepareCfBuildOutput(output)).rejects.toThrow(
+      'symlink outside the asset directory',
+    );
+  },
+);
 
 it.skipIf(process.platform === 'win32')('rejects symlinked native modules', async () => {
   const root = await nativeBuild();
@@ -293,11 +351,14 @@ it('records an explicit build mode and matching target account', async () => {
     main: 'index.js',
     account_id: 'account-id',
   });
-  await withPrepared(prepareCfBuildOutput(output, 'account-id', 'staging'), async (prepared) => {
-    const built = await readBuildOutput(prepared.directory);
-    expect(built.rootConfig.accountId).toBe('account-id');
-    expect(built.rootConfig.buildContext).toEqual({ isPreview: false, mode: 'staging' });
-  });
+  await withPrepared(
+    prepareCfBuildOutput(output, { accountId: 'account-id', mode: 'staging' }),
+    async (prepared) => {
+      const built = await readBuildOutput(prepared.directory);
+      expect(built.rootConfig.accountId).toBe('account-id');
+      expect(built.rootConfig.buildContext).toEqual({ isPreview: false, mode: 'staging' });
+    },
+  );
 });
 
 it('rejects a mismatching explicit target account', async () => {
@@ -307,7 +368,9 @@ it('rejects a mismatching explicit target account', async () => {
     main: 'index.js',
     account_id: 'built-account',
   });
-  await expect(prepareCfBuildOutput(output, 'different-account')).resolves.toBeNull();
+  await expect(
+    prepareCfBuildOutput(output, { accountId: 'different-account' }),
+  ).resolves.toBeNull();
 });
 
 it(
@@ -360,34 +423,37 @@ export default { fetch() {
     expect(
       readdirSync(output, { recursive: true }).some((name) => String(name).endsWith('.css')),
     ).toBe(true);
-    await withPrepared(prepareCfBuildOutput(output, 'account-id'), async (prepared) => {
-      const built = await readBuildOutput(prepared.directory);
-      const manifest = built.workers.default.config.manifest!;
-      expect(manifest.type).toBe('complete');
-      expect(manifest.modules['index.js']).toEqual({ type: 'esm' });
-      expect(manifest.modules['index.js.map']).toEqual({ type: 'sourcemap' });
-      for (const [name, type] of Object.entries({
-        message: 'text',
-        page: 'text',
-        query: 'text',
-        bytes: 'data',
-        module: 'wasm',
-      })) {
-        const moduleName = Object.keys(manifest.modules).find((path) =>
-          path.startsWith(`assets/${name}-`),
-        );
-        expect(moduleName).toBeDefined();
-        expect(manifest.modules[moduleName!]).toEqual({ type });
-        expect(
-          readFileSync(
-            join(prepared.directory, '.cloudflare/output/v0/workers/default/bundle', moduleName!),
-          ),
-        ).toEqual(readFileSync(join(output, moduleName!)));
-      }
-      expect(manifest.modules['.vite/manifest.json']).toBeUndefined();
-      expect(Object.keys(manifest.modules).some((name) => name.endsWith('.css'))).toBe(false);
-      expectCfDryRun(prepared.directory);
-    });
+    await withPrepared(
+      prepareCfBuildOutput(output, { accountId: 'account-id' }),
+      async (prepared) => {
+        const built = await readBuildOutput(prepared.directory);
+        const manifest = built.workers.default.config.manifest!;
+        expect(manifest.type).toBe('complete');
+        expect(manifest.modules['index.js']).toEqual({ type: 'esm' });
+        expect(manifest.modules['index.js.map']).toEqual({ type: 'sourcemap' });
+        for (const [name, type] of Object.entries({
+          message: 'text',
+          page: 'text',
+          query: 'text',
+          bytes: 'data',
+          module: 'wasm',
+        })) {
+          const moduleName = Object.keys(manifest.modules).find((path) =>
+            path.startsWith(`assets/${name}-`),
+          );
+          expect(moduleName).toBeDefined();
+          expect(manifest.modules[moduleName!]).toEqual({ type });
+          expect(
+            readFileSync(
+              join(prepared.directory, '.cloudflare/output/v0/workers/default/bundle', moduleName!),
+            ),
+          ).toEqual(readFileSync(join(output, moduleName!)));
+        }
+        expect(manifest.modules['.vite/manifest.json']).toBeUndefined();
+        expect(Object.keys(manifest.modules).some((name) => name.endsWith('.css'))).toBe(false);
+        expectCfDryRun(prepared.directory);
+      },
+    );
   },
   CF_BUILD_TIMEOUT_MS,
 );
@@ -411,7 +477,7 @@ it(
     mkdirSync(client);
     writeFileSync(join(client, 'index.html'), '<h1>hello</h1>');
     const disposed = await withPrepared(
-      prepareCfBuildOutput(output, 'account-id'),
+      prepareCfBuildOutput(output, { accountId: 'account-id' }),
       async (prepared) => {
         const built = await readBuildOutput(prepared.directory);
         expect(built.rootConfig.accountId).toBe('account-id');
@@ -495,14 +561,17 @@ it(
     );
     writeFileSync(join(output, 'assets/message.js'), 'export const message = "nested entry";\n');
     rmSync(join(output, 'index.js'));
-    await withPrepared(prepareCfBuildOutput(output, 'account-id'), async (prepared) => {
-      const built = await readBuildOutput(prepared.directory);
-      expect(built.workers.default.config.manifest).toMatchObject({
-        mainModule: 'assets/index-hash.js',
-        modules: { 'assets/message.js': { type: 'esm' } },
-      });
-      expectCfDryRun(prepared.directory);
-    });
+    await withPrepared(
+      prepareCfBuildOutput(output, { accountId: 'account-id' }),
+      async (prepared) => {
+        const built = await readBuildOutput(prepared.directory);
+        expect(built.workers.default.config.manifest).toMatchObject({
+          mainModule: 'assets/index-hash.js',
+          modules: { 'assets/message.js': { type: 'esm' } },
+        });
+        expectCfDryRun(prepared.directory);
+      },
+    );
   },
   CF_BUILD_TIMEOUT_MS,
 );
@@ -511,7 +580,7 @@ it.each(['../index.js', '/index.js', 'C:\\index.js'])(
   'rejects an out-of-bundle entry %s',
   async (main) => {
     const output = worker({ name: 'void-test', compatibility_date: '2026-09-29', main });
-    await expect(prepareCfBuildOutput(output, 'account-id')).rejects.toThrow(
+    await expect(prepareCfBuildOutput(output, { accountId: 'account-id' })).rejects.toThrow(
       'inside its output directory',
     );
   },
@@ -523,7 +592,7 @@ it('reports a missing built entry', async () => {
     compatibility_date: '2026-09-29',
     main: 'assets/missing.js',
   });
-  await expect(prepareCfBuildOutput(output, 'account-id')).rejects.toThrow(
+  await expect(prepareCfBuildOutput(output, { accountId: 'account-id' })).rejects.toThrow(
     '"assets/missing.js" is missing',
   );
 });
@@ -536,19 +605,22 @@ it('preserves binary font modules in a deployable Worker bundle', async () => {
     "import font from './assets/font.woff2'; export default { fetch() { return new Response(String(font.byteLength)) } };\n",
   );
   writeFileSync(join(output, 'assets/font.woff2'), Buffer.from([1, 2, 3]));
-  await withPrepared(prepareCfBuildOutput(output, 'account-id'), async (prepared) => {
-    const built = await readBuildOutput(prepared.directory);
-    expect(built.workers.default.config.manifest).toMatchObject({
-      mainModule: 'index.js',
-      modules: { 'assets/font.woff2': { type: 'data' } },
-    });
-  });
+  await withPrepared(
+    prepareCfBuildOutput(output, { accountId: 'account-id' }),
+    async (prepared) => {
+      const built = await readBuildOutput(prepared.directory);
+      expect(built.workers.default.config.manifest).toMatchObject({
+        mainModule: 'index.js',
+        modules: { 'assets/font.woff2': { type: 'data' } },
+      });
+    },
+  );
 });
 
 it('names the file when a plugin emits an unsupported module', async () => {
   const output = worker({ name: 'void-test', compatibility_date: '2026-09-29', main: 'index.js' });
   writeFileSync(join(output, 'plugin.unknown'), 'unexpected');
-  await expect(prepareCfBuildOutput(output, 'account-id')).rejects.toThrow(
+  await expect(prepareCfBuildOutput(output, { accountId: 'account-id' })).rejects.toThrow(
     'unsupported module "plugin.unknown"',
   );
 });
@@ -561,11 +633,14 @@ it('preserves limits and placement', async () => {
     limits: { cpu_ms: 100 },
     placement: { mode: 'smart' },
   });
-  await withPrepared(prepareCfBuildOutput(output, 'account-id'), async (prepared) => {
-    const built = await readBuildOutput(prepared.directory);
-    expect(built.workers.default.config.limits).toEqual({ cpuMs: 100 });
-    expect(built.workers.default.config.placement).toEqual({ mode: 'smart' });
-  });
+  await withPrepared(
+    prepareCfBuildOutput(output, { accountId: 'account-id' }),
+    async (prepared) => {
+      const built = await readBuildOutput(prepared.directory);
+      expect(built.workers.default.config.limits).toEqual({ cpuMs: 100 });
+      expect(built.workers.default.config.placement).toEqual({ mode: 'smart' });
+    },
+  );
 });
 
 it(
@@ -580,17 +655,20 @@ it(
       keep_assets: true,
       vars: { EDITED: 'current' },
     });
-    await withPrepared(prepareCfBuildOutput(output, 'account-id'), async (prepared) => {
-      const built = await readBuildOutput(prepared.directory);
-      expect(built.workers.default.config.env).toMatchObject({
-        EDITED: { type: 'text', value: 'current' },
-      });
-      expect(built.workers.default.config.unsafe?.metadata).toMatchObject({
-        keep_bindings: ['plain_text', 'json', 'secret_text', 'secret_key'],
-        keep_assets: true,
-      });
-      expectCfDryRun(prepared.directory);
-    });
+    await withPrepared(
+      prepareCfBuildOutput(output, { accountId: 'account-id' }),
+      async (prepared) => {
+        const built = await readBuildOutput(prepared.directory);
+        expect(built.workers.default.config.env).toMatchObject({
+          EDITED: { type: 'text', value: 'current' },
+        });
+        expect(built.workers.default.config.unsafe?.metadata).toMatchObject({
+          keep_bindings: ['plain_text', 'json', 'secret_text', 'secret_key'],
+          keep_assets: true,
+        });
+        expectCfDryRun(prepared.directory);
+      },
+    );
   },
   CF_BUILD_TIMEOUT_MS,
 );
@@ -614,22 +692,25 @@ it('deploys Worker Workflow declarations through cf build output', async () => {
     join(output, 'index.js'),
     'export class Flow { async run() {} }\nexport default { fetch() { return new Response("ok") } };\n',
   );
-  await withPrepared(prepareCfBuildOutput(output, 'account-id'), async (prepared) => {
-    const built = await readBuildOutput(prepared.directory);
-    expect(built.workers.default.config.env?.FLOW).toEqual({
-      type: 'workflow',
-      name: 'void-test-flow',
-      worker: 'void-test',
-      exportName: 'Flow',
-    });
-    expect(built.workers.default.config.exports?.Flow).toEqual({
-      type: 'workflow',
-      name: 'void-test-flow',
-      schedules: '0 * * * *',
-      limits: { steps: 100 },
-    });
-    expectCfDryRun(prepared.directory);
-  });
+  await withPrepared(
+    prepareCfBuildOutput(output, { accountId: 'account-id' }),
+    async (prepared) => {
+      const built = await readBuildOutput(prepared.directory);
+      expect(built.workers.default.config.env?.FLOW).toEqual({
+        type: 'workflow',
+        name: 'void-test-flow',
+        worker: 'void-test',
+        exportName: 'Flow',
+      });
+      expect(built.workers.default.config.exports?.Flow).toEqual({
+        type: 'workflow',
+        name: 'void-test-flow',
+        schedules: '0 * * * *',
+        limits: { steps: 100 },
+      });
+      expectCfDryRun(prepared.directory);
+    },
+  );
 }, 15_000);
 
 it('copies an internal symlinked Worker module into the prebuilt artifact', async () => {
@@ -639,13 +720,18 @@ it('copies an internal symlinked Worker module into the prebuilt artifact', asyn
     main: 'index.js',
   });
   symlinkSync('index.js', join(output, 'chunk.js'));
-  await withPrepared(prepareCfBuildOutput(output, 'account-id'), async (prepared) => {
-    const built = await readBuildOutput(prepared.directory);
-    expect(built.workers.default.config.manifest?.modules['chunk.js']).toEqual({ type: 'esm' });
-    expect(
-      existsSync(join(prepared.directory, '.cloudflare/output/v0/workers/default/bundle/chunk.js')),
-    ).toBe(true);
-  });
+  await withPrepared(
+    prepareCfBuildOutput(output, { accountId: 'account-id' }),
+    async (prepared) => {
+      const built = await readBuildOutput(prepared.directory);
+      expect(built.workers.default.config.manifest?.modules['chunk.js']).toEqual({ type: 'esm' });
+      expect(
+        existsSync(
+          join(prepared.directory, '.cloudflare/output/v0/workers/default/bundle/chunk.js'),
+        ),
+      ).toBe(true);
+    },
+  );
 });
 
 it('keeps Durable Objects, Queue triggers, and Containers in cf prebuilt output', async () => {
@@ -663,21 +749,24 @@ it('keeps Durable Objects, Queue triggers, and Containers in cf prebuilt output'
       consumers: [{ queue: 'jobs', max_batch_size: 10 }],
     },
   });
-  await withPrepared(prepareCfBuildOutput(output, 'account-id'), async (prepared) => {
-    const built = await readBuildOutput(prepared.directory);
-    expect(built.workers.default.config.exports?.Counter).toEqual(
-      expect.objectContaining({ type: 'durable-object', storage: 'sqlite' }),
-    );
-    expect(built.workers.default.config.env?.COUNTER).toEqual({
-      type: 'unsafe:durable_object_namespace',
-      class_name: 'Counter',
-    });
-    expect(built.workers.default.config.triggers).toContainEqual(
-      expect.objectContaining({ type: 'queue', name: 'jobs' }),
-    );
-    expect(built.containers).toHaveLength(1);
-    expectCfDryRun(prepared.directory);
-  });
+  await withPrepared(
+    prepareCfBuildOutput(output, { accountId: 'account-id' }),
+    async (prepared) => {
+      const built = await readBuildOutput(prepared.directory);
+      expect(built.workers.default.config.exports?.Counter).toEqual(
+        expect.objectContaining({ type: 'durable-object', storage: 'sqlite' }),
+      );
+      expect(built.workers.default.config.env?.COUNTER).toEqual({
+        type: 'unsafe:durable_object_namespace',
+        class_name: 'Counter',
+      });
+      expect(built.workers.default.config.triggers).toContainEqual(
+        expect.objectContaining({ type: 'queue', name: 'jobs' }),
+      );
+      expect(built.containers).toHaveLength(1);
+      expectCfDryRun(prepared.directory);
+    },
+  );
 }, 15_000);
 
 it('bundles a generated static Worker and staged assets into prebuilt cf output', async () => {
@@ -765,21 +854,24 @@ it.skipIf(process.platform === 'win32')(
     chmodSync(binary, 0o755);
     vi.stubEnv('WRANGLER_DOCKER_BIN', binary);
     let tag: string;
-    await withPrepared(prepareCfBuildOutput(output, 'account-id'), async (prepared) => {
-      const built = await readBuildOutput(prepared.directory);
-      const container = built.containers[0]!.config;
-      expect(container.schedulingPolicy).toBe('durable-object');
-      if (container.schedulingPolicy !== 'durable-object') {
-        throw new Error('Expected a managed container');
-      }
-      const image = container.images?.default;
-      expect(image).toEqual({ localReference: expect.stringMatching(/^void-sandbox-build:/) });
-      if (!image || !('localReference' in image)) {
-        throw new Error('Expected a prepared local image');
-      }
-      tag = image.localReference;
-      expectCfDryRun(prepared.directory);
-    });
+    await withPrepared(
+      prepareCfBuildOutput(output, { accountId: 'account-id' }),
+      async (prepared) => {
+        const built = await readBuildOutput(prepared.directory);
+        const container = built.containers[0]!.config;
+        expect(container.schedulingPolicy).toBe('durable-object');
+        if (container.schedulingPolicy !== 'durable-object') {
+          throw new Error('Expected a managed container');
+        }
+        const image = container.images?.default;
+        expect(image).toEqual({ localReference: expect.stringMatching(/^void-sandbox-build:/) });
+        if (!image || !('localReference' in image)) {
+          throw new Error('Expected a prepared local image');
+        }
+        tag = image.localReference;
+        expectCfDryRun(prepared.directory);
+      },
+    );
     const calls = readFileSync(log, 'utf8')
       .trim()
       .split('\n')

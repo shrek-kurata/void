@@ -46,6 +46,11 @@ export function getFrameworkEntry(
   );
 }
 
+const TANSTACK_SERVER_ENTRY = '@tanstack/react-start/server-entry';
+// Cloudflare treats a `main` with a module extension as a file path and anything else as a
+// module specifier, so a migrated TanStack config keeps `main: "@tanstack/react-start/server-entry"`.
+const WORKER_ENTRY_PATH = /^(?:\.{1,2}[\\/]|[\\/]|[a-z]:[\\/])|\.(?:[cm]?[jt]s|[jt]sx)$/i;
+
 /** The framework's own server entry, before our trigger wrapper. */
 export function getOriginalFrameworkEntry(
   framework: Framework,
@@ -54,11 +59,18 @@ export function getOriginalFrameworkEntry(
 ): string {
   switch (framework) {
     case 'tanstack-start': {
-      if (configuredMain === undefined) {
-        return '@tanstack/react-start/server-entry';
+      if (
+        configuredMain === undefined ||
+        configuredMain === TANSTACK_SERVER_ENTRY ||
+        configuredMain === `${TANSTACK_SERVER_ENTRY}.js`
+      ) {
+        return TANSTACK_SERVER_ENTRY;
       }
       if (typeof configuredMain !== 'string' || configuredMain.trim() === '') {
         throw new Error('config: cloudflare.main must be a non-empty Worker entry path.');
+      }
+      if (!WORKER_ENTRY_PATH.test(configuredMain)) {
+        return configuredMain;
       }
       const original = resolve(root, configuredMain);
       if (original === resolve(root, '.void', 'tanstack-start-trigger-wrapper.ts')) {
