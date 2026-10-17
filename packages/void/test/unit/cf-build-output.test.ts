@@ -309,6 +309,15 @@ it.skipIf(process.platform === 'win32')('rejects symlinked native modules', asyn
   await expect(prepareCfBuildOutput(root)).rejects.toThrow('Symlinks are not permitted');
 });
 
+it.skipIf(process.platform === 'win32')('rejects symlinked native assets', async () => {
+  const root = await nativeBuild();
+  const secret = join(root, 'secret.txt');
+  writeFileSync(secret, 'private');
+  symlinkSync(secret, join(getWorkerAssetsDir(root), 'leak.txt'));
+  // The native reader refuses every symlink, so no link reaches the copied assets.
+  await expect(prepareCfBuildOutput(root)).rejects.toThrow('Symlinks are not permitted');
+});
+
 it('preserves assets-only native output without adding a Worker bundle', async () => {
   const root = await nativeBuild();
   rmSync(getWorkerBundleDir(root), { recursive: true, force: true });
