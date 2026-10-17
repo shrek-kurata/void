@@ -1,5 +1,5 @@
-import { mkdirSync } from 'node:fs';
-import { join, resolve } from 'pathslash';
+import { existsSync, mkdirSync } from 'node:fs';
+import { extname, isAbsolute, join, resolve } from 'pathslash';
 import { writeFileIfChanged } from './codegen/write-if-changed.ts';
 import { type DatabaseDialect, type NotFoundHandling } from './config.ts';
 import { isViteBuildOrPreview } from './plugin-dev-config.ts';
@@ -47,9 +47,20 @@ export function getFrameworkEntry(
 }
 
 const TANSTACK_SERVER_ENTRY = '@tanstack/react-start/server-entry';
-// Cloudflare treats a `main` with a module extension as a file path and anything else as a
-// module specifier, so a migrated TanStack config keeps `main: "@tanstack/react-start/server-entry"`.
-const WORKER_ENTRY_PATH = /^(?:\.{1,2}[\\/]|[\\/]|[a-z]:[\\/])|\.(?:[cm]?[jt]s|[jt]sx)$/i;
+// The extensions Cloudflare reads as a file in `main`; anything else is a module specifier.
+const ENTRY_MODULE_EXTENSIONS = new Set(['.js', '.mjs', '.ts', '.mts', '.jsx', '.tsx']);
+
+/**
+ * Whether `main` names a file in the app rather than a package. A migrated TanStack config keeps
+ * `main: "@tanstack/react-start/server-entry"`, and a package subpath may end in `.js`, so a
+ * bare name counts as a file only when it exists in the app.
+ */
+function isFileEntry(root: string, main: string): boolean {
+  if (main.startsWith('.') || isAbsolute(main)) {
+    return true;
+  }
+  return ENTRY_MODULE_EXTENSIONS.has(extname(main)) && existsSync(resolve(root, main));
+}
 
 /** The framework's own server entry, before our trigger wrapper. */
 export function getOriginalFrameworkEntry(
@@ -69,7 +80,7 @@ export function getOriginalFrameworkEntry(
       if (typeof configuredMain !== 'string' || configuredMain.trim() === '') {
         throw new Error('config: cloudflare.main must be a non-empty Worker entry path.');
       }
-      if (!WORKER_ENTRY_PATH.test(configuredMain)) {
+      if (!isFileEntry(root, configuredMain)) {
         return configuredMain;
       }
       const original = resolve(root, configuredMain);

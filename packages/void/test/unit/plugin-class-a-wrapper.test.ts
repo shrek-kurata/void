@@ -134,16 +134,19 @@ describe('Class A framework custom entry', () => {
     },
   );
 
-  it('leaves a package entry for Vite to resolve', () => {
-    expect(
-      getOriginalFrameworkEntry('tanstack-start', createTanStackRoot(), '@acme/worker/entry'),
-    ).toBe('@acme/worker/entry');
-  });
+  it.each(['@acme/worker/entry', '@acme/worker/entry.js', 'acme-worker/entry.js'])(
+    'leaves the package entry %s for Vite to resolve',
+    (main) => {
+      expect(getOriginalFrameworkEntry('tanstack-start', createTanStackRoot(), main)).toBe(main);
+    },
+  );
 
   it.each(['src/server.ts', './src/server', '../shared/server.tsx'])(
     'reads the file entry %s from the app root',
     (main) => {
       const root = createTanStackRoot();
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src/server.ts'), 'export default {};\n');
       expect(getOriginalFrameworkEntry('tanstack-start', root, main)).toBe(
         toSlash(resolve(root, main)),
       );

@@ -864,10 +864,11 @@ it.skipIf(process.platform === 'win32')(
           throw new Error('Expected a managed container');
         }
         const image = container.images?.default;
-        expect(image).toEqual({ localReference: expect.stringMatching(/^void-sandbox-build:/) });
         if (!image || !('localReference' in image)) {
           throw new Error('Expected a prepared local image');
         }
+        expect(Object.keys(image)).toEqual(['localReference']);
+        expect(image.localReference.startsWith('void-sandbox-build:')).toBe(true);
         tag = image.localReference;
         expectCfDryRun(prepared.directory);
       },

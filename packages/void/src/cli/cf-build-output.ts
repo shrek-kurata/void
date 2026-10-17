@@ -280,8 +280,9 @@ async function prepareNativeBuildOutput(
         for (const module of Object.keys(worker.config.manifest.modules)) {
           const destination = join(bundle, module);
           if (
+            // A backslash or a colon (a Windows drive) has no place in a bundle path.
             module.includes('\\') ||
-            /^[a-z]:/i.test(module) ||
+            module.includes(':') ||
             !isInside(bundle, resolve(bundle, module)) ||
             !isInside(worker.bundleDir, resolve(worker.bundleDir, module))
           ) {

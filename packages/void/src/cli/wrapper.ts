@@ -741,6 +741,8 @@ function generateWrapperSource(
   }
 
   lines.push('export default {');
+  // Keep the entry's own handlers, such as email or tail; Void's handlers below take precedence.
+  lines.push('  ...original,');
 
   if (needsFetchWrap) {
     lines.push('  fetch: wrappedFetch,');
