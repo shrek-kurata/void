@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync } from 'node:fs';
-import { extname, isAbsolute, join, resolve } from 'pathslash';
+import { mkdirSync, statSync } from 'node:fs';
+import { isAbsolute, join, resolve } from 'pathslash';
 import { writeFileIfChanged } from './codegen/write-if-changed.ts';
 import { type DatabaseDialect, type NotFoundHandling } from './config.ts';
 import { isViteBuildOrPreview } from './plugin-dev-config.ts';
@@ -47,8 +47,6 @@ export function getFrameworkEntry(
 }
 
 const TANSTACK_SERVER_ENTRY = '@tanstack/react-start/server-entry';
-// The extensions Cloudflare reads as a file in `main`; anything else is a module specifier.
-const ENTRY_MODULE_EXTENSIONS = new Set(['.js', '.mjs', '.ts', '.mts', '.jsx', '.tsx']);
 
 /**
  * Whether `main` names a file in the app rather than a package. A migrated TanStack config keeps
@@ -59,7 +57,7 @@ function isFileEntry(root: string, main: string): boolean {
   if (main.startsWith('.') || isAbsolute(main)) {
     return true;
   }
-  return ENTRY_MODULE_EXTENSIONS.has(extname(main)) && existsSync(resolve(root, main));
+  return statSync(resolve(root, main), { throwIfNoEntry: false })?.isFile() === true;
 }
 
 /** The framework's own server entry, before our trigger wrapper. */

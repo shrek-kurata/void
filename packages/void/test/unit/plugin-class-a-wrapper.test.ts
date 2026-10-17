@@ -141,12 +141,13 @@ describe('Class A framework custom entry', () => {
     },
   );
 
-  it.each(['src/server.ts', './src/server', '../shared/server.tsx'])(
+  it.each(['src/server.ts', 'src/worker.cjs', './src/server', '../shared/server.tsx'])(
     'reads the file entry %s from the app root',
     (main) => {
       const root = createTanStackRoot();
       mkdirSync(join(root, 'src'), { recursive: true });
       writeFileSync(join(root, 'src/server.ts'), 'export default {};\n');
+      writeFileSync(join(root, 'src/worker.cjs'), 'module.exports = {};\n');
       expect(getOriginalFrameworkEntry('tanstack-start', root, main)).toBe(
         toSlash(resolve(root, main)),
       );
